@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instagram Direct Photo Opener</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body {
+      width: 320px;
+      min-width: 320px;
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body class="popup-body">
+  <div class="popup-container">
+    <header class="popup-header">
+      <div class="logo-icon small">
+        <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      </div>
+      <div>
+        <h1 class="popup-title">Media Opener</h1>
+        <span class="status-badge"><span class="status-dot"></span> Active</span>
+      </div>
+    </header>
+
+    <div class="popup-card">
+      <div class="popup-card-label">Active Hotkey</div>
+      <div class="shortcut-display mini" id="popupShortcutDisplay">
+        <!-- Key badges rendered here -->
+      </div>
+      <p class="popup-tip">Hover over any photo or video on Instagram or X (Twitter) and press this shortcut.</p>
+    </div>
+
+    <div class="popup-options">
+      <div class="option-row mini">
+        <span class="option-title">Open in background</span>
+        <label class="switch mini">
+          <input type="checkbox" id="popupOpenInBackground">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="popup-footer">
+      <button id="openOptionsBtn" class="btn btn-secondary full-width">⚙️ Change Hotkey & Settings</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

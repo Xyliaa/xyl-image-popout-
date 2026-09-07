@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - Direct Photo & Video Opener</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="settings-container">
+    <header class="header">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+        </div>
+        <div>
+          <h1>Direct Photo & Video Opener</h1>
+          <p class="subtitle">Instagram & X (Twitter) full-size media preferences</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="card-list">
+      <!-- Hotkey Section -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Activation Shortcut</h2>
+          <p class="description">Press this shortcut while viewing any Instagram or X (Twitter) post to open the direct high-res media.</p>
+        </div>
+
+        <div class="shortcut-recorder-box">
+          <div class="shortcut-display" id="shortcutDisplay">
+            <!-- Dynamically populated key badges -->
+          </div>
+          <div class="recorder-actions">
+            <button id="recordBtn" class="btn btn-primary">
+              <span id="recordBtnText">Record Shortcut</span>
+            </button>
+            <button id="resetShortcutBtn" class="btn btn-secondary">Reset to Alt + I</button>
+          </div>
+        </div>
+        <p id="recordInstruction" class="hint hidden">Press your desired key combination now (e.g. <code>Alt + I</code>, <code>Ctrl + Shift + O</code>, or any single key)...</p>
+      </section>
+
+      <!-- Preferences Section -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Opening Behavior</h2>
+          <p class="description">Configure how the new photo tab opens.</p>
+        </div>
+
+        <div class="option-row">
+          <div class="option-info">
+            <label for="openInBackground" class="option-title">Open in Background Tab</label>
+            <span class="option-desc">Keep your focus on Instagram while opening the direct image silently in a background tab.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="openInBackground">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="option-row">
+          <div class="option-info">
+            <label for="videoAction" class="option-title">Video Pop-Out Action</label>
+            <span class="option-desc">Action to take when pressing shortcut on an Instagram Video or Reel.</span>
+          </div>
+          <select id="videoAction" class="select-input">
+            <option value="new_tab">Open direct MP4 video in new tab</option>
+            <option value="pip">Picture-in-Picture floating window</option>
+          </select>
+        </div>
+
+        <div class="option-row">
+          <div class="option-info">
+            <label for="showToast" class="option-title">Show In-Page Notification</label>
+            <span class="option-desc">Display a brief confirmation toast when the media is located and opened.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="showToast">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Testing Area -->
+      <section class="card">
+        <div class="card-header">
+          <h2>Test Your Shortcut</h2>
+          <p class="description">Press your configured shortcut anywhere on this page to test it.</p>
+        </div>
+        <div id="testBox" class="test-box">
+          <span id="testStatus">Press your shortcut to test...</span>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div id="saveNotice" class="save-notice">✓ Settings saved</div>
+      <p class="footer-meta">Works on Instagram feeds, carousels, reels, and X (Twitter) photos, banners, and videos.</p>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
