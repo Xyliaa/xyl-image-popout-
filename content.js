@@ -53,8 +53,8 @@
     }
   } catch (e) {}
 
-  // Track mouse coordinates
-  let mouseX = 0, mouseY = 0;
+  // Track mouse coordinates (defaults to screen center until moved)
+  let mouseX = window.innerWidth / 2, mouseY = window.innerHeight / 2;
   window.addEventListener("mousemove", (e) => { mouseX = e.clientX; mouseY = e.clientY; }, { passive: true });
 
   // Key listener
@@ -434,21 +434,50 @@
      INSTAGRAM FEED & POST TARGETING
      ========================================================================== */
 
+  /**
+   * Ascend from an element to find the enclosing post card.
+   * Works for both initial <article> posts and dynamically loaded / suggested <div> posts.
+   */
   function findPostContainer(el) {
     if (!el) return null;
+
+    const modal = el.closest("div[role='dialog']");
+    if (modal) {
+      const art = modal.querySelector("article");
+      return art || modal;
+    }
+
     let curr = el;
     while (curr && curr !== document.body && curr !== document.documentElement) {
-      if (curr.tagName === "ARTICLE" || curr.getAttribute("role") === "dialog") {
+      if (curr.tagName === "ARTICLE" || curr.getAttribute("role") === "article") {
         return curr;
       }
-      if (curr.querySelector && curr.querySelector("a[href*='/p/'], a[href*='/reel/']")) {
-        const r = curr.getBoundingClientRect();
-        if (r.width > 250 && r.height > 200 && r.width < 1200) {
-          return curr;
+
+      // Check if curr is a standalone post card
+      if (curr.querySelector) {
+        const postLinks = curr.querySelectorAll("a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']");
+        if (postLinks.length > 0) {
+          const r = curr.getBoundingClientRect();
+          // An Instagram feed post card has bounded width and height
+          if (r.width >= 260 && r.width <= 900 && r.height >= 250 && r.height <= 2500) {
+            const shortcodes = new Set();
+            for (const l of postLinks) {
+              const href = l.getAttribute("href") || "";
+              const m = href.match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+              if (m) shortcodes.add(m[2]);
+            }
+
+            // Exactly one post shortcode means curr is a single post card (not the multi-post feed wrapper)
+            if (shortcodes.size === 1) {
+              return curr;
+            }
+          }
         }
       }
+
       curr = curr.parentElement;
     }
+
     return el.closest("article, div[role='dialog']");
   }
 
@@ -473,24 +502,36 @@
       container = document.querySelector("main article, article");
     }
 
-    // If on home feed, find the post/article closest to the vertical center of the viewport
+    // If on home feed, scan ALL posts currently in the DOM (including dynamically loaded infinite-scroll posts)
     if (!container) {
-      let articles = Array.from(document.querySelectorAll("article"));
-      if (articles.length === 0) {
-        const links = Array.from(document.querySelectorAll("a[href*='/p/'], a[href*='/reel/']"));
-        articles = links.map(l => findPostContainer(l)).filter(Boolean);
+      const candidateMap = new Map();
+
+      // 1. All <article> elements
+      document.querySelectorAll("article, div[role='article']").forEach(art => {
+        candidateMap.set(art, art);
+      });
+
+      // 2. All post links on the page (covers dynamically loaded posts in <div>)
+      const allLinks = Array.from(document.querySelectorAll("a[href*='/p/'], a[href*='/reel/']"));
+      for (const link of allLinks) {
+        const postCard = findPostContainer(link);
+        if (postCard) {
+          candidateMap.set(postCard, postCard);
+        }
       }
 
+      const allPosts = Array.from(candidateMap.values());
       const viewportMidY = window.innerHeight / 2;
       let minDiff = Infinity;
-      for (const art of articles) {
-        const r = art.getBoundingClientRect();
-        if (r.bottom > 80 && r.top < window.innerHeight - 80) {
-          const artMidY = r.top + r.height / 2;
-          const diff = Math.abs(artMidY - viewportMidY);
+      for (const post of allPosts) {
+        const r = post.getBoundingClientRect();
+        // Post must be at least partially in the viewport
+        if (r.bottom > 100 && r.top < window.innerHeight - 100) {
+          const postMidY = r.top + r.height / 2;
+          const diff = Math.abs(postMidY - viewportMidY);
           if (diff < minDiff) {
             minDiff = diff;
-            container = art;
+            container = post;
           }
         }
       }
@@ -523,7 +564,6 @@
       }
 
       // 3. Detect physically active/centered slide in the DOM
-      // (Instagram virtualizes carousel items into 2-3 slides, so NEVER index into `slides` with global `slideIndex`!)
       const slides = Array.from(container.querySelectorAll("ul li"));
       if (slides.length > 0) {
         if (hoveredEl) {
@@ -557,14 +597,17 @@
       return { container: null, domUrl: null, currentSrc: "", domVideo: null, isVideoContext: false, shortcode: null, slideIndex: 0, hasExplicitIndex: false };
     }
 
-    const domVideo = (hoveredEl && (hoveredEl.tagName === "VIDEO" ? hoveredEl : hoveredEl.closest("video"))) ||
+    const domVideo = (hoveredEl && (hoveredEl.tagName === "VIDEO" ? hoveredEl : hoveredEl.closest("video") || hoveredEl.parentElement?.querySelector("video"))) ||
                      mediaScope.querySelector("video");
     const isReelPage = /\/(reel|reels)\//.test(location.pathname);
     const isVideoContext = isReelPage || !!domVideo;
 
+    // Accurately resolve image even through Instagram's transparent overlay (_aagw)
     let img = null;
     if (hoveredEl && hoveredEl.tagName === "IMG" && isValidPostImage(hoveredEl)) {
       img = hoveredEl;
+    } else if (hoveredEl && hoveredEl.parentElement && hoveredEl.parentElement.querySelector("img") && isValidPostImage(hoveredEl.parentElement.querySelector("img"))) {
+      img = hoveredEl.parentElement.querySelector("img");
     } else {
       const imgs = Array.from(mediaScope.querySelectorAll("img")).filter(isValidPostImage);
       if (imgs.length > 0) {
