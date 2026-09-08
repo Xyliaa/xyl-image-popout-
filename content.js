@@ -231,14 +231,14 @@
 
     // 2. Feed, single post, reel, or modal
     const targetInfo = findInstagramTargetInfo();
-    const { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex } = targetInfo;
+    const { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex, hasExplicitIndex } = targetInfo;
 
     notify(isVideoContext ? "Locating high-res video..." : "Locating original full-size photo...");
 
     // Fetch media from Instagram's API using shortcode
     let mediaResult = null;
     if (shortcode) {
-      mediaResult = await fetchMediaFromApi(shortcode, slideIndex, currentSrc, isVideoContext);
+      mediaResult = await fetchMediaFromApi(shortcode, slideIndex, currentSrc, isVideoContext, hasExplicitIndex);
     }
 
     // Fallback strictly to container's DOM media
@@ -502,28 +502,48 @@
     // Carousel slide detection strictly in container
     let activeSlide = null;
     let slideIndex = 0;
+    let hasExplicitIndex = false;
+
     if (container) {
+      // 1. Check URL parameter img_index first (e.g. ?img_index=6)
+      const params = new URLSearchParams(location.search);
+      const urlIdx = params.get("img_index");
+      if (urlIdx && !isNaN(parseInt(urlIdx, 10)) && parseInt(urlIdx, 10) >= 1) {
+        slideIndex = parseInt(urlIdx, 10) - 1;
+        hasExplicitIndex = true;
+      }
+
+      // 2. If no URL param, check for on-screen carousel counter badge (e.g. "6/10")
+      if (!hasExplicitIndex) {
+        const badgeIdx = getCarouselIndexFromDom(container);
+        if (badgeIdx >= 0) {
+          slideIndex = badgeIdx;
+          hasExplicitIndex = true;
+        }
+      }
+
+      // 3. Detect physically active/centered slide in the DOM
+      // (Instagram virtualizes carousel items into 2-3 slides, so NEVER index into `slides` with global `slideIndex`!)
       const slides = Array.from(container.querySelectorAll("ul li"));
-      if (slides.length > 1) {
-        // Check URL parameter img_index first
-        const params = new URLSearchParams(location.search);
-        const urlIdx = params.get("img_index");
-        if (urlIdx && !isNaN(parseInt(urlIdx, 10)) && parseInt(urlIdx, 10) >= 1) {
-          slideIndex = parseInt(urlIdx, 10) - 1;
-          activeSlide = slides[slideIndex] || slides[0];
-        } else {
-          // Detect visually centered slide
+      if (slides.length > 0) {
+        if (hoveredEl) {
+          const hoveredSlide = hoveredEl.closest("ul li");
+          if (hoveredSlide && container.contains(hoveredSlide)) {
+            activeSlide = hoveredSlide;
+          }
+        }
+
+        if (!activeSlide) {
           const cRect = container.getBoundingClientRect();
           const midX = cRect.left + cRect.width / 2;
           let minDiff = Infinity;
-          slides.forEach((s, idx) => {
+          slides.forEach((s) => {
             const r = s.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
               const diff = Math.abs((r.left + r.width / 2) - midX);
               if (diff < minDiff) {
                 minDiff = diff;
                 activeSlide = s;
-                slideIndex = idx;
               }
             }
           });
@@ -534,7 +554,7 @@
     // Active media element (strictly slide or container - never global document)
     const mediaScope = activeSlide || container;
     if (!mediaScope) {
-      return { container: null, domUrl: null, currentSrc: "", domVideo: null, isVideoContext: false, shortcode: null, slideIndex: 0 };
+      return { container: null, domUrl: null, currentSrc: "", domVideo: null, isVideoContext: false, shortcode: null, slideIndex: 0, hasExplicitIndex: false };
     }
 
     const domVideo = (hoveredEl && (hoveredEl.tagName === "VIDEO" ? hoveredEl : hoveredEl.closest("video"))) ||
@@ -553,10 +573,29 @@
       }
     }
 
-    const currentSrc = (domVideo && (domVideo.src || domVideo.currentSrc)) || (img ? (img.currentSrc || img.src || "") : "");
+    const currentSrc = (domVideo && (domVideo.src || domVideo.currentSrc || domVideo.poster)) || (img ? (img.currentSrc || img.src || "") : "");
     const domUrl = img ? getDomHighestRes(img) : (domVideo?.poster || null);
 
-    return { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex };
+    return { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex, hasExplicitIndex };
+  }
+
+  function getCarouselIndexFromDom(container) {
+    if (!container) return -1;
+    const elements = Array.from(container.querySelectorAll("div, span"));
+    for (const el of elements) {
+      if (el.children.length === 0) {
+        const text = (el.textContent || "").trim();
+        const m = text.match(/^(\d+)\s*\/\s*(\d+)$/);
+        if (m) {
+          const cur = parseInt(m[1], 10);
+          const total = parseInt(m[2], 10);
+          if (cur >= 1 && cur <= total && total <= 50) {
+            return cur - 1;
+          }
+        }
+      }
+    }
+    return -1;
   }
 
   /**
@@ -638,7 +677,17 @@
     return sorted[0]?.url || null;
   }
 
-  async function fetchMediaFromApi(shortcode, slideIndex, currentSrc, isVideoContext) {
+  function pickBestVideo(versions) {
+    if (!versions || versions.length === 0) return null;
+    const sorted = [...versions].sort((a, b) => {
+      const sizeA = (a.width || 0) * (a.height || 0) || 0;
+      const sizeB = (b.width || 0) * (b.height || 0) || 0;
+      return sizeB - sizeA;
+    });
+    return sorted[0]?.url || null;
+  }
+
+  async function fetchMediaFromApi(shortcode, slideIndex, currentSrc, isVideoContext, hasExplicitIndex) {
     try {
       const mediaId = shortcodeToMediaId(shortcode);
       if (!mediaId) return null;
@@ -669,7 +718,14 @@
       // Carousel post
       if (item.carousel_media && item.carousel_media.length > 0) {
         let slide = null;
-        if (currentSrc) {
+
+        // 1. Authoritative explicit index from URL or on-screen counter badge
+        if (hasExplicitIndex && slideIndex >= 0 && slideIndex < item.carousel_media.length) {
+          slide = item.carousel_media[slideIndex];
+        }
+
+        // 2. Filename matching from currentSrc
+        if (!slide && currentSrc) {
           const fnMatch = currentSrc.match(/\/([^\/?#]+\.(?:jpg|jpeg|png|webp|mp4))/i);
           const fileName = fnMatch ? fnMatch[1] : null;
           if (fileName) {
@@ -680,29 +736,36 @@
           }
         }
 
+        // 3. Fallback to slideIndex or first slide
         if (!slide) {
           slide = item.carousel_media[slideIndex] || item.carousel_media[0];
         }
 
         const isSlideVideo = slide.media_type === 2 || (slide.video_versions && slide.video_versions.length > 0);
-        if (isSlideVideo && (isVideoContext || slide.media_type === 2)) {
-          return { url: slide.video_versions?.[0]?.url || null, type: "video" };
+        if (isSlideVideo) {
+          const videoUrl = pickBestVideo(slide.video_versions);
+          if (videoUrl) {
+            return { url: videoUrl, type: "video" };
+          }
         }
 
         return {
-          url: pickBestCandidate(slide.image_versions2?.candidates) || slide.video_versions?.[0]?.url || null,
+          url: pickBestCandidate(slide.image_versions2?.candidates) || pickBestVideo(slide.video_versions) || null,
           type: isSlideVideo ? "video" : "photo"
         };
       }
 
       // Single photo or video post
       const isItemVideo = item.media_type === 2 || (item.video_versions && item.video_versions.length > 0);
-      if (isItemVideo && (isVideoContext || item.media_type === 2)) {
-        return { url: item.video_versions?.[0]?.url || null, type: "video" };
+      if (isItemVideo) {
+        const videoUrl = pickBestVideo(item.video_versions);
+        if (videoUrl && (isVideoContext || item.media_type === 2)) {
+          return { url: videoUrl, type: "video" };
+        }
       }
 
       return {
-        url: pickBestCandidate(item.image_versions2?.candidates) || item.video_versions?.[0]?.url || null,
+        url: pickBestCandidate(item.image_versions2?.candidates) || pickBestVideo(item.video_versions) || null,
         type: isItemVideo ? "video" : "photo"
       };
     } catch (e) {
