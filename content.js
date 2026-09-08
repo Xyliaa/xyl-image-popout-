@@ -1,6 +1,6 @@
 /**
  * Direct Photo & Video Opener - Content Script
- * Supports Instagram & X (Twitter) full-size image extraction & video pop-out / Picture-in-Picture.
+ * Supports Instagram (Posts, Carousels, Stories, Reels) & X (Twitter).
  */
 
 (() => {
@@ -118,7 +118,6 @@
         openMediaUrl(videoSrc, "video");
         return;
       }
-      // If streamed blob video, fall back to max-resolution poster
       if (domVideo.poster) {
         const fullPoster = getMaxTwitterUrl(domVideo.poster);
         openMediaUrl(fullPoster, "photo");
@@ -142,10 +141,8 @@
       hoveredEl = document.elementFromPoint(mouseX, mouseY);
     }
 
-    // Check hovered video
     const hoveredVideo = hoveredEl ? (hoveredEl.tagName === "VIDEO" ? hoveredEl : hoveredEl.closest("video") || hoveredEl.parentElement?.querySelector("video")) : null;
 
-    // Check hovered image
     let hoveredImg = null;
     if (hoveredEl) {
       if (hoveredEl.tagName === "IMG" && isValidTwitterImage(hoveredEl)) {
@@ -157,7 +154,6 @@
       }
     }
 
-    // Check open modal dialog / photo view on X
     const modal = document.querySelector("div[aria-modal='true'], div[role='dialog']");
     let modalImg = null;
     let modalVideo = null;
@@ -166,7 +162,6 @@
       modalImg = modal.querySelector("img[src*='twimg.com/media/'], div[data-testid='tweetPhoto'] img");
     }
 
-    // Check visible tweet in timeline
     let visibleTweetImg = null;
     let visibleTweetVideo = null;
     const tweets = Array.from(document.querySelectorAll("article[data-testid='tweet']"));
@@ -198,34 +193,22 @@
   function isValidTwitterImage(img) {
     if (!img) return false;
     const src = img.currentSrc || img.src || "";
-    // Filter out tiny emojis, badges, or icons
     const w = img.offsetWidth || img.naturalWidth || 0;
     const h = img.offsetHeight || img.naturalHeight || 0;
     if ((w > 0 && w < 48) || (h > 0 && h < 48)) return false;
     return src.includes("twimg.com");
   }
 
-  /**
-   * Convert Twitter/X image URL into 100% full original resolution (name=orig)
-   */
   function getMaxTwitterUrl(url) {
     if (!url) return "";
-
-    // Profile picture: strip size descriptor (_normal, _bigger, _mini, _reasonably_small)
     if (url.includes("/profile_images/")) {
       return url.replace(/_(?:bigger|normal|mini|reasonably_small|\d+x\d+)(\.[^/_?#]+)(?:[?#].*)?$/i, "$1");
     }
-
-    // Profile banner: strip dimension suffix (/1500x500)
     if (url.includes("/profile_banners/")) {
       return url.replace(/\/\d+x\d+(?:[?#].*)?$/, "");
     }
-
-    // Media photo: replace trailing format or name with name=orig
     if (url.includes("twimg.com")) {
-      let u = url;
-      // Replace :large or :medium if path-based
-      u = u.replace(/:([a-z0-9_]+)(?:\?|$)/i, "?name=$1");
+      let u = url.replace(/:([a-z0-9_]+)(?:\?|$)/i, "?name=$1");
       if (/[?&]name=[^&#]*/.test(u)) {
         return u.replace(/([?&])name=[^&#]*/, "$1name=orig");
       } else {
@@ -233,7 +216,6 @@
         return u + sep + "name=orig";
       }
     }
-
     return url;
   }
 
@@ -242,20 +224,24 @@
      ========================================================================== */
 
   async function handleInstagramTrigger() {
+    // 1. Dedicated handler for Instagram Stories
+    if (location.pathname.startsWith("/stories/")) {
+      return handleInstagramStoriesTrigger();
+    }
+
+    // 2. Feed, single post, reel, or modal
     const targetInfo = findInstagramTargetInfo();
-    const { container, domUrl, currentSrc, domVideo, isVideoContext } = targetInfo;
-    const shortcode = getShortcode(container);
-    const slideIndex = getSlideIndex(container);
+    const { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex } = targetInfo;
 
     notify(isVideoContext ? "Locating high-res video..." : "Locating original full-size photo...");
 
-    // 1. Fetch media from Instagram's API
+    // Fetch media from Instagram's API using shortcode
     let mediaResult = null;
     if (shortcode) {
       mediaResult = await fetchMediaFromApi(shortcode, slideIndex, currentSrc, isVideoContext);
     }
 
-    // 2. Fallback to DOM if API did not resolve
+    // Fallback strictly to container's DOM media
     if (!mediaResult || !mediaResult.url) {
       if (domVideo && (domVideo.src || domVideo.currentSrc) && !domVideo.src.startsWith("blob:")) {
         mediaResult = { url: domVideo.src || domVideo.currentSrc, type: "video" };
@@ -264,7 +250,7 @@
       }
     }
 
-    // 3. Handle Video Picture-in-Picture if requested by user
+    // Picture-in-Picture for video
     if (mediaResult?.type === "video" && videoAction === "pip" && domVideo) {
       if (document.pictureInPictureEnabled) {
         try {
@@ -281,52 +267,340 @@
     }
 
     if (!mediaResult || !mediaResult.url) {
-      notify("No photo or video found under cursor or on screen", true);
+      notify("No photo or video found in this post", true);
       return;
     }
 
-    // 4. Open direct media in new tab
     const isVideo = mediaResult.type === "video";
     openMediaUrl(mediaResult.url, isVideo ? "video" : "photo");
   }
 
+  /* ==========================================================================
+     INSTAGRAM STORIES HANDLER
+     ========================================================================== */
+
+  async function handleInstagramStoriesTrigger() {
+    notify("Locating story media...");
+
+    const storyMedia = getActiveStoryMedia();
+    if (!storyMedia) {
+      notify("No active story media found on screen", true);
+      return;
+    }
+
+    // Check if the current URL has a numeric story ID
+    const storyIdMatch = location.pathname.match(/\/stories\/[^\/]+\/(\d+)/);
+    const storyId = storyIdMatch ? storyIdMatch[1] : null;
+
+    let finalUrl = null;
+    let isVideo = storyMedia.type === "video";
+
+    // Try fetching unprocessed original media via story mediaId if available
+    if (storyId) {
+      try {
+        let data = null;
+        try {
+          const res = await fetch(`/api/v1/media/${storyId}/info/`, {
+            headers: { "X-IG-App-ID": "936619743392459", "X-Requested-With": "XMLHttpRequest" },
+            credentials: "include"
+          });
+          if (res.ok) data = await res.json();
+        } catch (e) {}
+
+        if (!data) {
+          data = await new Promise((resolve) => {
+            safeSendMessage({ action: "fetch_media", mediaId: storyId }, (res) => {
+              resolve(res?.success && res?.data ? res.data : null);
+            });
+          });
+        }
+
+        const item = data?.items?.[0];
+        if (item) {
+          const isItemVideo = item.media_type === 2 || (item.video_versions && item.video_versions.length > 0);
+          if (isVideo && isItemVideo && item.video_versions?.length > 0) {
+            finalUrl = item.video_versions[0].url;
+          } else if (!isVideo && !isItemVideo && item.image_versions2?.candidates?.length > 0) {
+            finalUrl = pickBestCandidate(item.image_versions2.candidates);
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Fallback to active story's direct DOM URL
+    if (!finalUrl) {
+      finalUrl = storyMedia.url;
+    }
+
+    // Handle Picture-in-Picture for video story
+    if (isVideo && videoAction === "pip" && storyMedia.element && storyMedia.element.tagName === "VIDEO") {
+      if (document.pictureInPictureEnabled) {
+        try {
+          if (document.pictureInPictureElement === storyMedia.element) {
+            await document.exitPictureInPicture();
+            notify("Exited Picture-in-Picture");
+          } else {
+            await storyMedia.element.requestPictureInPicture();
+            notify("Popped out video into Picture-in-Picture!");
+          }
+          return;
+        } catch (pipErr) {}
+      }
+    }
+
+    if (!finalUrl) {
+      notify("No photo or video found in this story", true);
+      return;
+    }
+
+    openMediaUrl(finalUrl, isVideo ? "video" : "photo");
+  }
+
+  /**
+   * Find the active story in the center of the screen
+   */
+  function getActiveStoryMedia() {
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
+
+    // 1. Direct hover if hovering over media element
+    let hoveredEl = null;
+    if (mouseX || mouseY) {
+      hoveredEl = document.elementFromPoint(mouseX, mouseY);
+      if (hoveredEl) {
+        if (hoveredEl.tagName === "VIDEO" && (hoveredEl.src || hoveredEl.currentSrc)) {
+          return { type: "video", url: hoveredEl.currentSrc || hoveredEl.src, element: hoveredEl };
+        }
+        if (hoveredEl.tagName === "IMG" && isValidStoryImage(hoveredEl)) {
+          return { type: "photo", url: getDomHighestRes(hoveredEl), element: hoveredEl };
+        }
+      }
+    }
+
+    // 2. Identify candidate videos and images centered on screen
+    // Preloaded adjacent stories are translated to the left or right, so they will NOT intersect the center
+    const videos = Array.from(document.querySelectorAll("video")).filter(v => {
+      const r = v.getBoundingClientRect();
+      if (r.width < 120 || r.height < 200) return false;
+      return r.left <= centerX && r.right >= centerX && r.top <= centerY && r.bottom >= centerY;
+    });
+
+    const images = Array.from(document.querySelectorAll("img")).filter(img => {
+      if (!isValidStoryImage(img)) return false;
+      const r = img.getBoundingClientRect();
+      if (r.width < 120 || r.height < 200) return false;
+      return r.left <= centerX && r.right >= centerX && r.top <= centerY && r.bottom >= centerY;
+    });
+
+    const getCenterDist = (el) => {
+      const r = el.getBoundingClientRect();
+      const midX = r.left + r.width / 2;
+      const midY = r.top + r.height / 2;
+      return Math.hypot(midX - centerX, midY - centerY);
+    };
+
+    // If an active playing/ready video is centered on screen, prioritize it
+    const activeVideo = videos.find(v => !v.paused || v.currentTime > 0 || v.readyState >= 2);
+    if (activeVideo) {
+      return { type: "video", url: activeVideo.currentSrc || activeVideo.src, element: activeVideo };
+    }
+
+    // Combine centered candidates and pick the one closest to viewport center
+    const allCandidates = [
+      ...videos.map(v => ({ type: "video", el: v, url: v.currentSrc || v.src, dist: getCenterDist(v) })),
+      ...images.map(img => ({ type: "photo", el: img, url: getDomHighestRes(img), dist: getCenterDist(img) }))
+    ];
+
+    if (allCandidates.length > 0) {
+      allCandidates.sort((a, b) => a.dist - b.dist);
+      const best = allCandidates[0];
+      return { type: best.type, url: best.url, element: best.el };
+    }
+
+    return null;
+  }
+
+  function isValidStoryImage(img) {
+    if (!img) return false;
+    const w = img.offsetWidth || img.naturalWidth || 0;
+    const h = img.offsetHeight || img.naturalHeight || 0;
+    if ((w > 0 && w < 120) || (h > 0 && h < 180)) return false;
+    const alt = (img.getAttribute("alt") || "").toLowerCase();
+    if (alt.includes("profile picture") || alt.includes("profile photo")) return false;
+    return true;
+  }
+
+  /* ==========================================================================
+     INSTAGRAM FEED & POST TARGETING
+     ========================================================================== */
+
+  function findPostContainer(el) {
+    if (!el) return null;
+    let curr = el;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (curr.tagName === "ARTICLE" || curr.getAttribute("role") === "dialog") {
+        return curr;
+      }
+      if (curr.querySelector && curr.querySelector("a[href*='/p/'], a[href*='/reel/']")) {
+        const r = curr.getBoundingClientRect();
+        if (r.width > 250 && r.height > 200 && r.width < 1200) {
+          return curr;
+        }
+      }
+      curr = curr.parentElement;
+    }
+    return el.closest("article, div[role='dialog']");
+  }
+
   function findInstagramTargetInfo() {
     let container = null;
-    let hoveredImg = null;
-    let hoveredVideo = null;
+    let hoveredEl = null;
 
     if (mouseX || mouseY) {
-      const hovered = document.elementFromPoint(mouseX, mouseY);
-      if (hovered) {
-        hoveredVideo = (hovered.tagName === "VIDEO" ? hovered : hovered.closest("video") || hovered.parentElement?.querySelector("video")) || null;
-        hoveredImg = getValidImage(hovered);
-        container = hovered.closest("article, [role='dialog'], [role='presentation'], li");
+      hoveredEl = document.elementFromPoint(mouseX, mouseY);
+      if (hoveredEl) {
+        container = findPostContainer(hoveredEl);
       }
     }
 
+    // If modal dialog is open, prioritize it
     if (!container) {
-      container = document.querySelector("div[role='dialog'] article, div[role='dialog'], main article");
+      container = document.querySelector("div[role='dialog'] article, div[role='dialog']");
     }
 
+    // If on standalone page /p/ or /reel/, find main post
+    if (!container && /\/(p|reel|reels|tv)\//.test(location.pathname)) {
+      container = document.querySelector("main article, article");
+    }
+
+    // If on home feed, find the post/article closest to the vertical center of the viewport
     if (!container) {
-      const articles = Array.from(document.querySelectorAll("article"));
-      let maxH = 0;
+      let articles = Array.from(document.querySelectorAll("article"));
+      if (articles.length === 0) {
+        const links = Array.from(document.querySelectorAll("a[href*='/p/'], a[href*='/reel/']"));
+        articles = links.map(l => findPostContainer(l)).filter(Boolean);
+      }
+
+      const viewportMidY = window.innerHeight / 2;
+      let minDiff = Infinity;
       for (const art of articles) {
         const r = art.getBoundingClientRect();
-        const h = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
-        if (h > maxH) { maxH = h; container = art; }
+        if (r.bottom > 80 && r.top < window.innerHeight - 80) {
+          const artMidY = r.top + r.height / 2;
+          const diff = Math.abs(artMidY - viewportMidY);
+          if (diff < minDiff) {
+            minDiff = diff;
+            container = art;
+          }
+        }
       }
     }
 
-    const domVideo = hoveredVideo || (container ? container.querySelector("video") : null) || document.querySelector("main video");
-    const isReelPage = /\/(reel|reels)\//.test(location.pathname);
-    const isVideoContext = isReelPage || !!hoveredVideo || !!domVideo;
+    // Get shortcode strictly from container or page URL
+    const shortcode = getShortcodeStrict(container);
 
-    const img = hoveredImg || (container ? getValidImageFromContainer(container) : null) || getLargestImageOnPage();
-    const currentSrc = (hoveredVideo && (hoveredVideo.src || hoveredVideo.currentSrc)) || (img ? (img.currentSrc || img.src || "") : "");
+    // Carousel slide detection strictly in container
+    let activeSlide = null;
+    let slideIndex = 0;
+    if (container) {
+      const slides = Array.from(container.querySelectorAll("ul li"));
+      if (slides.length > 1) {
+        // Check URL parameter img_index first
+        const params = new URLSearchParams(location.search);
+        const urlIdx = params.get("img_index");
+        if (urlIdx && !isNaN(parseInt(urlIdx, 10)) && parseInt(urlIdx, 10) >= 1) {
+          slideIndex = parseInt(urlIdx, 10) - 1;
+          activeSlide = slides[slideIndex] || slides[0];
+        } else {
+          // Detect visually centered slide
+          const cRect = container.getBoundingClientRect();
+          const midX = cRect.left + cRect.width / 2;
+          let minDiff = Infinity;
+          slides.forEach((s, idx) => {
+            const r = s.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              const diff = Math.abs((r.left + r.width / 2) - midX);
+              if (diff < minDiff) {
+                minDiff = diff;
+                activeSlide = s;
+                slideIndex = idx;
+              }
+            }
+          });
+        }
+      }
+    }
+
+    // Active media element (strictly slide or container - never global document)
+    const mediaScope = activeSlide || container;
+    if (!mediaScope) {
+      return { container: null, domUrl: null, currentSrc: "", domVideo: null, isVideoContext: false, shortcode: null, slideIndex: 0 };
+    }
+
+    const domVideo = (hoveredEl && (hoveredEl.tagName === "VIDEO" ? hoveredEl : hoveredEl.closest("video"))) ||
+                     mediaScope.querySelector("video");
+    const isReelPage = /\/(reel|reels)\//.test(location.pathname);
+    const isVideoContext = isReelPage || !!domVideo;
+
+    let img = null;
+    if (hoveredEl && hoveredEl.tagName === "IMG" && isValidPostImage(hoveredEl)) {
+      img = hoveredEl;
+    } else {
+      const imgs = Array.from(mediaScope.querySelectorAll("img")).filter(isValidPostImage);
+      if (imgs.length > 0) {
+        imgs.sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+        img = imgs[0];
+      }
+    }
+
+    const currentSrc = (domVideo && (domVideo.src || domVideo.currentSrc)) || (img ? (img.currentSrc || img.src || "") : "");
     const domUrl = img ? getDomHighestRes(img) : (domVideo?.poster || null);
 
-    return { container, domUrl, currentSrc, domVideo, isVideoContext };
+    return { container, domUrl, currentSrc, domVideo, isVideoContext, shortcode, slideIndex };
+  }
+
+  /**
+   * Extract shortcode strictly from page URL or within the container (no global fallback)
+   */
+  function getShortcodeStrict(container) {
+    const pageMatch = location.pathname.match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+    if (pageMatch) return pageMatch[2];
+
+    if (container) {
+      const link = container.querySelector("a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']");
+      if (link) {
+        const m = (link.getAttribute("href") || "").match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+        if (m) return m[2];
+      }
+    }
+
+    return null;
+  }
+
+  function isValidPostImage(img) {
+    if (!img) return false;
+    const w = img.offsetWidth || img.naturalWidth || 0;
+    const h = img.offsetHeight || img.naturalHeight || 0;
+    if ((w > 0 && w < 160) || (h > 0 && h < 160)) return false;
+    const alt = (img.getAttribute("alt") || "").toLowerCase();
+    return !alt.includes("profile picture") && !alt.includes("profile photo");
+  }
+
+  function getDomHighestRes(img) {
+    const srcset = img.getAttribute("srcset") || img.srcset;
+    if (srcset) {
+      const candidates = srcset.split(/,\s*(?=https?:\/\/)/);
+      let bestUrl = "", maxW = 0;
+      for (const item of candidates) {
+        const match = item.trim().match(/^(https?:\/\/\S+)(?:\s+(\d+)w)?$/);
+        if (match) {
+          const w = parseInt(match[2], 10) || 0;
+          if (w >= maxW) { maxW = w; bestUrl = match[1]; }
+        }
+      }
+      if (bestUrl) return bestUrl.replace(/&amp;/g, "&");
+    }
+    return (img.currentSrc || img.src || "").replace(/&amp;/g, "&");
   }
 
   function shortcodeToMediaId(sc) {
@@ -392,6 +666,7 @@
       const item = data?.items?.[0];
       if (!item) return null;
 
+      // Carousel post
       if (item.carousel_media && item.carousel_media.length > 0) {
         let slide = null;
         if (currentSrc) {
@@ -420,6 +695,7 @@
         };
       }
 
+      // Single photo or video post
       const isItemVideo = item.media_type === 2 || (item.video_versions && item.video_versions.length > 0);
       if (isItemVideo && (isVideoContext || item.media_type === 2)) {
         return { url: item.video_versions?.[0]?.url || null, type: "video" };
@@ -432,108 +708,6 @@
     } catch (e) {
       return null;
     }
-  }
-
-  function getShortcode(container) {
-    const pageMatch = location.pathname.match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-    if (pageMatch) return pageMatch[2];
-
-    if (container) {
-      const link = container.querySelector("a[href*='/p/'], a[href*='/reel/']");
-      if (link) {
-        const m = (link.getAttribute("href") || "").match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-        if (m) return m[2];
-      }
-    }
-
-    const anyLink = document.querySelector("article a[href*='/p/'], article a[href*='/reel/']");
-    if (anyLink) {
-      const m = (anyLink.getAttribute("href") || "").match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-      if (m) return m[2];
-    }
-
-    return null;
-  }
-
-  function getSlideIndex(container) {
-    const params = new URLSearchParams(location.search);
-    const idx = params.get("img_index");
-    if (idx) {
-      const n = parseInt(idx, 10);
-      if (!isNaN(n) && n >= 1) return n - 1;
-    }
-
-    if (container) {
-      const slides = Array.from(container.querySelectorAll("ul li"));
-      if (slides.length > 1) {
-        const cRect = container.getBoundingClientRect();
-        const mid = cRect.left + cRect.width / 2;
-        let minDiff = Infinity, bestIdx = 0;
-        slides.forEach((s, i) => {
-          const r = s.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
-            const diff = Math.abs((r.left + r.width / 2) - mid);
-            if (diff < minDiff) { minDiff = diff; bestIdx = i; }
-          }
-        });
-        return bestIdx;
-      }
-    }
-
-    return 0;
-  }
-
-  function getValidImageFromContainer(container) {
-    const slides = Array.from(container.querySelectorAll("ul li"));
-    if (slides.length > 1) {
-      const idx = getSlideIndex(container);
-      const active = slides[idx] || slides[0];
-      const img = Array.from(active.querySelectorAll("img")).find(isValidPostImage);
-      if (img) return img;
-    }
-    return Array.from(container.querySelectorAll("img")).find(isValidPostImage);
-  }
-
-  function getValidImage(el) {
-    if (!el) return null;
-    if (el.tagName === "IMG" && isValidPostImage(el)) return el;
-    const parent = el.parentElement;
-    if (parent) {
-      const img = parent.querySelector("img");
-      if (img && isValidPostImage(img)) return img;
-    }
-    return null;
-  }
-
-  function isValidPostImage(img) {
-    const w = img.offsetWidth || img.naturalWidth || 0;
-    const h = img.offsetHeight || img.naturalHeight || 0;
-    if ((w > 0 && w < 160) || (h > 0 && h < 160)) return false;
-    const alt = (img.getAttribute("alt") || "").toLowerCase();
-    return !alt.includes("profile picture") && !alt.includes("profile photo");
-  }
-
-  function getLargestImageOnPage() {
-    const imgs = Array.from(document.querySelectorAll("img")).filter(isValidPostImage);
-    imgs.sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
-    return imgs[0] || null;
-  }
-
-  function getDomHighestRes(img) {
-    const srcset = img.getAttribute("srcset") || img.srcset;
-    if (srcset) {
-      const candidates = srcset.split(/,\s*(?=https?:\/\/)/);
-      let bestUrl = "", maxW = 0;
-      for (const item of candidates) {
-        const match = item.trim().match(/^(https?:\/\/\S+)(?:\s+(\d+)w)?$/);
-        if (match) {
-          const w = parseInt(match[2], 10) || 0;
-          if (w >= maxW) { maxW = w; bestUrl = match[1]; }
-        }
-      }
-      if (bestUrl) return bestUrl.replace(/&amp;/g, "&");
-    }
-    return (img.currentSrc || img.src || "").replace(/&amp;/g, "&");
   }
 
   /* ==========================================================================
